@@ -1,0 +1,55 @@
+name: semantic-image-matcher
+description: >
+  Image-to-post matching system with vision classification, semantic
+  embedding-based ranking, and an explainable mismatch guard.
+
+setup:
+  - docker compose up -d
+  - python -m venv venv
+  - "venv\\Scripts\\Activate.ps1  # Windows PowerShell"
+  - pip install -r requirements.txt
+  - cp .env.example .env  # then fill in GOOGLE_API_KEY
+
+seed: python batch_classify.py && python embed_images.py
+
+run: uvicorn app.main:app --reload
+
+test: python -m pytest tests/ -v
+
+base_url: http://localhost:8000
+
+endpoints:
+  - method: GET
+    path: /pairings?status=suggested
+    description: List guard-suggested image/post pairings
+  - method: POST
+    path: /pairings/{pairing_id}/approve
+    description: Approve a suggested pairing
+  - method: POST
+    path: /pairings/{pairing_id}/reject
+    description: Reject a suggested pairing
+
+probes:
+  - name: batch_classification
+    command: python batch_classify.py
+    expect: every image gains schema-valid tags; low-confidence images flagged as needs_review
+
+  - name: correct_ranking
+    command: python match_post.py
+    expect: red fox post ranks a real red fox image first (see README Results)
+
+  - name: mismatch_guard_rejection
+    command: docker exec -it flyrank-db psql -U flyrank -d flyrank -c "SELECT * FROM pairings WHERE guard_decision='rejected';"
+    expect: coyote image rejected for a wolf-themed post with an explainable reason
+
+  - name: no_confident_match
+    command: python add_post.py  # with unrelated post text, then match_post.py
+    expect: "No good match found for this post."
+
+  - name: eval_precision
+    command: python eval_top1.py
+    expect: top-1 precision reported, matches README (100%, 6/6)
+
+  - name: cost_tracking
+    command: python cost_summary.py
+    expect: every vision/embedding call attributed with a cost entry, broken down by call_type
